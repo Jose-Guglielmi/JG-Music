@@ -816,4 +816,9 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
       // mostrar un mensaje al usuario, o intentar nuevamente
     }
   }
+
+  void borrarColaDeReproduccion() {
+    listaCancionesPorReproducir = [];
+    notifyListeners();
+  }
 }

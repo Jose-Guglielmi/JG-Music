@@ -288,8 +288,10 @@ class _MusicPlayerUIState extends State<MusicPlayerUI> {
                   GestureDetector(
                     onTap: () {
                       setState(() {});
-                      showBottomSheet(context,
-                          widget.myAudioHandler.listaCancionesPorReproducir);
+                      showBottomSheet(
+                          context,
+                          widget.myAudioHandler.listaCancionesPorReproducir,
+                          myAudioHandler);
                     },
                     child: Container(
                       padding: const EdgeInsets.symmetric(
@@ -318,7 +320,8 @@ class _MusicPlayerUIState extends State<MusicPlayerUI> {
     );
   }
 
-  void showBottomSheet(BuildContext context, List<Cancion> lista) {
+  void showBottomSheet(BuildContext context, List<Cancion> lista,
+      MyAudioHandler myAudioHandler) {
     showModalBottomSheet(
       context: context,
       builder: (BuildContext context) {
@@ -341,9 +344,19 @@ class _MusicPlayerUIState extends State<MusicPlayerUI> {
                       color: Colors.white),
                 ),
               ),
-              const Text(
-                "Cola de reproduccion:",
-                style: TextStyle(color: Colors.white),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    "Cola de reproduccion:",
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  IconButton(
+                      onPressed: () {
+                        myAudioHandler.borrarColaDeReproduccion();
+                      },
+                      icon: const Icon(Icons.delete_outline))
+                ],
               ),
               Padding(
                 padding: const EdgeInsets.all(8.0),
