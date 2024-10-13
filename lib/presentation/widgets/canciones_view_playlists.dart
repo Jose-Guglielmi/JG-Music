@@ -69,12 +69,11 @@ class _CancionesViewPlaylistsState extends State<CancionesViewPlaylists> {
                       ),
                     ),
                     const SizedBox(width: 10),
-                    ClipOval(
-                      child: Image.network(
-                        cancion.thumbnail,
-                        height: 70,
-                        width: 70,
-                        fit: BoxFit.cover,
+                    const ClipOval(
+                      child: Icon(
+                        Icons.music_note_outlined,
+                        color: Colors.purple,
+                        size: 40,
                       ),
                     ),
                     Padding(

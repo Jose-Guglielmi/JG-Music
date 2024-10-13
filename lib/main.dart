@@ -15,23 +15,50 @@ void main() async {
   runApp(MainApp(audioHandler: audioHandler));
 }
 
-class MainApp extends StatelessWidget {
+class MainApp extends StatefulWidget {
   final MyAudioHandler audioHandler;
   const MainApp({super.key, required this.audioHandler});
+
+  @override
+  State<MainApp> createState() => _MainAppState();
+}
+
+class _MainAppState extends State<MainApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    widget.audioHandler.player
+        .dispose(); // Asegúrate de liberar los recursos del reproductor
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      // La app ha sido completamente cerrada
+      widget.audioHandler.player.stop();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(
-          value: audioHandler,
+          value: widget.audioHandler,
         ),
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         theme: AppTheme().themedata(),
         home: MenuInferior(
-          audioHandler: audioHandler,
+          audioHandler: widget.audioHandler,
         ),
       ),
     );

@@ -52,28 +52,11 @@ class _CancionesViewV2State extends State<CancionesViewV2> {
                 padding: const EdgeInsets.all(5),
                 child: Row(
                   children: [
-                    ClipOval(
-                      child: Image.network(
-                        cancion.thumbnail,
-                        height: 70,
-                        width: 70,
-                        fit: BoxFit.cover,
-                        loadingBuilder: (BuildContext context, Widget child,
-                            ImageChunkEvent? loadingProgress) {
-                          if (loadingProgress == null) {
-                            return child; // Retorna la imagen cuando ha sido cargada completamente
-                          } else {
-                            return CircleAvatar(
-                              backgroundColor: Colors.grey[800],
-                              radius: 40, // Ajusta el tamaño del ícono
-                              child: const Icon(
-                                Icons.person,
-                                color: Colors.purple,
-                                size: 40,
-                              ),
-                            );
-                          }
-                        },
+                    const ClipOval(
+                      child: Icon(
+                        Icons.music_note_outlined,
+                        color: Colors.purple,
+                        size: 40,
                       ),
                     ),
                     Padding(

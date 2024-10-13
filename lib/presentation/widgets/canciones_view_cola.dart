@@ -52,12 +52,11 @@ class _CancionesViewColaState extends State<CancionesViewCola> {
                 padding: const EdgeInsets.all(8.0),
                 child: Row(
                   children: [
-                    ClipOval(
-                      child: Image.network(
-                        cancion.thumbnail,
-                        height: 70,
-                        width: 70,
-                        fit: BoxFit.cover,
+                    const ClipOval(
+                      child: Icon(
+                        Icons.music_note_outlined,
+                        color: Colors.purple,
+                        size: 35,
                       ),
                     ),
                     Padding(

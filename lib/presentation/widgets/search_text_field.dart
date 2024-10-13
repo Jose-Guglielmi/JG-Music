@@ -20,8 +20,8 @@ class SearchTextField extends StatelessWidget {
           fillColor: AppTheme.colorList[1], // Color de fondo
         ),
         onFieldSubmitted: (value) {
-          myAudioHandler.apiYoutube(value, 0);
-          myAudioHandler.apiYoutube(value, 1);
+          myAudioHandler.fetchData(value, FilterType.artists);
+          myAudioHandler.fetchData(value, FilterType.song);
         },
       ),
     );

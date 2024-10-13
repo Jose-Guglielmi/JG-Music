@@ -1,271 +1,214 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:audio_service/audio_service.dart';
-import 'package:jg_music/presentation/widgets/direcciones.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:flutter/material.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:http/http.dart' as http;
+import 'package:jg_music/presentation/widgets/direcciones.dart';
 
+enum FilterType { artists, song, albums }
+
+/// MyAudioHandler es una clase que maneja la reproducción de audio y la gestión de playlists.
+/// Extiende BaseAudioHandler y mezcla SeekHandler y ChangeNotifier para proporcionar
+/// funcionalidades de servicio de audio y notificación de cambios.
 class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
-  //Clase que se encarga del manejo de los datos de las apis, para mostrarlo a al usuario
+  // Instancia del reproductor de audio
+  final player = AudioPlayer();
+
+  // Cliente de YouTube para obtener información de videos
+  final _yt = YoutubeExplode();
+
+  // Caché para URLs de audio
+  final _cache = <String, String>{};
+
+  // Variables de control
   bool _isHandlingCompletion = false;
+  bool cancionBucle = false;
+  bool isLoading = false;
+  bool miniReproduciendo = false;
+
+  // Listas y objetos para almacenar datos de música
+  List<Artist> listaArtistas = [];
+  List<Album> listaAlbunes = [];
+  Album albumSeleccionado = Album();
+  Cancion cancionSeleccionado = Cancion();
+  List<Cancion> listaCanciones = [];
+  List<Cancion> listaCancionesPorReproducir = [];
+  List<Cancion> listaCancionesMeGustas = [];
+  Set<Cancion> conjuntoCanciones = <Cancion>{};
+
+  // Manejo de letras sincronizadas
+  LyricSynchronizer? lyricSynchronizer;
+  ValueNotifier<List<String>> currentLyrics = ValueNotifier(['', '', '']);
+
+  // Índices y controles de reproducción
+  int _currentIndex = 0;
+  bool _isPlayingNext = false;
+  int selectedIndex = 0;
+  int menuItem = 0;
+  int playListSeleccionada = 0;
+
+  // Lista de playlists
+  List<PlaylistMyApp> listasDePlaylists = [];
+
+  /// Constructor de MyAudioHandler
   MyAudioHandler() {
-    obtenerListaMeGusta();
-    player.playbackEventStream.listen(_broadcastState);
-    player.playerStateStream.listen((state) {
-      if (state.processingState == ProcessingState.completed) {
-        if (_isHandlingCompletion) return;
-        _isHandlingCompletion = true;
-        if (cancionBucle) {
-          player.seek(Duration.zero);
-          play();
-        } else {
-          playNext();
-        }
-        // Restablecer el flag después de un breve delay para permitir futuras ejecuciones
-        Future.delayed(const Duration(milliseconds: 500), () {
-          _isHandlingCompletion = false;
-        });
-      }
-    });
+    _initializeHandler();
   }
 
-  obtenerListaMeGusta() async {
+  /// Inicializa el manejador de audio
+  void _initializeHandler() async {
+    await obtenerListaMeGusta();
+    _initializePlayer();
+  }
+
+  /// Inicializa el reproductor de audio
+  void _initializePlayer() {
+    player.playbackEventStream.listen(_broadcastState);
+    player.playerStateStream.listen(_handlePlaybackCompletion);
+  }
+
+  /// Maneja la finalización de la reproducción
+  void _handlePlaybackCompletion(PlayerState state) {
+    if (state.processingState == ProcessingState.completed) {
+      if (_isHandlingCompletion) return;
+      _isHandlingCompletion = true;
+      if (cancionBucle) {
+        player.seek(Duration.zero);
+        play();
+      } else {
+        playNext();
+      }
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _isHandlingCompletion = false;
+      });
+    }
+  }
+
+  static const String _baseUrl = 'https://youtube-music-api3.p.rapidapi.com';
+  static const Map<String, String> _headers = {
+    'x-rapidapi-key': '1b7ebc615amsh0e92916a60ff015p1f1bd5jsnf45ce63c33df',
+    'x-rapidapi-host': 'youtube-music-api3.p.rapidapi.com',
+  };
+
+  Future<void> fetchData(String artist, FilterType filter,
+      {String albumId = ''}) async {
+    final String endpoint = _getEndpoint(filter, artist, albumId);
+    final Uri url = Uri.parse('$_baseUrl/$endpoint');
+
+    try {
+      final response = await http.get(url, headers: _headers);
+      if (response.statusCode == 200) {
+        final jsonData = jsonDecode(response.body);
+        _processResponse(filter, jsonData);
+      } else {
+        throw Exception('Failed to load data: ${response.statusCode}');
+      }
+    } catch (e) {
+      // Handle the error appropriately
+    }
+  }
+
+  String _getEndpoint(FilterType filter, String artist, String albumId) {
+    switch (filter) {
+      case FilterType.albums when albumId.isNotEmpty:
+        return 'getAlbum?id=$albumId';
+      default:
+        return 'search?q=$artist&type=${filter.toString().split('.').last}';
+    }
+  }
+
+  void _processResponse(FilterType filter, Map<String, dynamic> jsonData) {
+    switch (filter) {
+      case FilterType.artists:
+        listaArtistas = ArtistList.fromJson(jsonData);
+      case FilterType.song:
+        listaCanciones = CancionesList.fromJson(jsonData);
+      case FilterType.albums:
+        listaAlbunes = AlbumList.fromJson(jsonData);
+    }
+    notifyListeners();
+  }
+
+  /// Obtiene la lista de canciones que le gustan al usuario
+  Future<void> obtenerListaMeGusta() async {
     listasDePlaylists = await obtenerPlaylists();
   }
 
+  /// Activa o desactiva la reproducción en bucle de la canción actual
   void bucleCancion() {
     cancionBucle = !cancionBucle;
     notifyListeners();
   }
 
-  //reproducir en bucle
-  bool cancionBucle = false;
-
-  //Lista de artistas
-  List<Artist> listaArtistas = [];
-
-  //Lista de albunes
-  List<Album> listaAlbunes = [];
-
-  //album seleccionada para visualizar
-  Album albumSeleccionado = Album();
-
-  //cancion seleccionada para reproducir
-  Cancion cancionSeleccionado = Cancion();
-
-  //Lista de canciones
-  List<Cancion> listaCanciones = [];
-
-  //Lista de cola de canciones
-  List<Cancion> listaCancionesPorReproducir = [];
-
-  //Lista de canciones
-  List<Cancion> listaCancionesMeGustas = [];
-  Set<Cancion> conjuntoCanciones = <Cancion>{};
-
-  //El que se encarga de reproducir el audio
-  final player = AudioPlayer();
-
-  //Nos indica si se esta cargando el audio
-  bool isLoading = false;
-
-  //bool que nos indica si se esta reproduciendo o no
-  bool miniReproduciendo = false;
-
-  LyricSynchronizer? lyricSynchronizer;
-  ValueNotifier<List<String>> currentLyrics = ValueNotifier(['', '', '']);
-
-  //Recibe el id del video y devuelve un link del audio del video.
+  /// Obtiene la URL del audio de un video de YouTube
   Future<String> obtenerUrlDelAudio(String idVideo) async {
-    var yt = YoutubeExplode();
-
-    var manifest = await yt.videos.streamsClient.getManifest(idVideo);
-    var audio = manifest.audioOnly.withHighestBitrate();
-    yt.close();
-    return audio.url.toString();
-  }
-
-  //Obtener info de la api de youtube,
-  //Filtros:
-  //0: artists
-  //1: song
-  //2: albums
-  Future<void> apiYoutube(String artista, int filtro,
-      {String albumId = ""}) async {
-    String filtrer = "";
-
-    switch (filtro) {
-      case 0:
-        filtrer = "artists";
-        break;
-      case 1:
-        filtrer = "song";
-        break;
-      case 2:
-        filtrer = "albums";
-        break;
-    }
-    final url = Uri.parse(
-        'https://youtube-music-api3.p.rapidapi.com/search?q=$artista&type=$filtrer');
-    final headers = {
-      'x-rapidapi-key': '1b7ebc615amsh0e92916a60ff015p1f1bd5jsnf45ce63c33df',
-      'x-rapidapi-host': 'youtube-music-api3.p.rapidapi.com',
-    };
-
-    final response = await http.get(url, headers: headers);
-
-    String jsonString = response.body;
-
-    Map<String, dynamic> jsonData = jsonDecode(jsonString);
-
-    switch (filtro) {
-      case 0:
-        listaArtistas = [];
-
-        listaArtistas = ArtistList.fromJson(jsonData);
-        break;
-      case 1:
-        listaCanciones = [];
-
-        listaCanciones = CancionesList.fromJson(jsonData);
-        break;
-      case 2:
-        listaAlbunes = [];
-
-        listaAlbunes = AlbumList.fromJson(jsonData);
-        break;
-      case 3:
-        final url = Uri.parse(
-            'https://youtube-music-api3.p.rapidapi.com/getAlbum?id=$albumId');
-        final headers = {
-          'x-rapidapi-key':
-              '1b7ebc615amsh0e92916a60ff015p1f1bd5jsnf45ce63c33df',
-          'x-rapidapi-host': 'youtube-music-api3.p.rapidapi.com',
-        };
-
-        final response = await http.get(url, headers: headers);
-
-        String jsonString = response.body;
-
-        Map<String, dynamic> jsonData = jsonDecode(jsonString);
-
-        albumSeleccionado = Album();
-
-        albumSeleccionado = Album.fromJson(jsonData);
-
-        break;
-    }
-    notifyListeners();
-  }
-
-  Future<List<Map<String, dynamic>>> fetchSyncedLyrics(String lyricsId) async {
-    final url = Uri.parse(
-        'https://youtube-music-api3.p.rapidapi.com/music/lyrics/synced?id=$lyricsId&format=json');
-    final headers = {
-      'x-rapidapi-key': '1b7ebc615amsh0e92916a60ff015p1f1bd5jsnf45ce63c33df',
-      'x-rapidapi-host': 'youtube-music-api3.p.rapidapi.com'
-    };
-
     try {
-      final response = await http.get(url, headers: headers);
-      if (response.statusCode == 200) {
-        final List<dynamic> jsonResult = json.decode(response.body);
-        return jsonResult.cast<Map<String, dynamic>>();
-      } else {
-        notifyListeners();
-        return [];
-      }
-    } catch (error) {
-      notifyListeners();
-      return [];
+      var manifest = await _yt.videos.streamsClient.getManifest(idVideo);
+      var audio = manifest.audioOnly.withHighestBitrate();
+      _cache[idVideo] = audio.url.toString();
+      return audio.url.toString();
+    } catch (e) {
+      rethrow;
     }
   }
 
-  Future<void> obtenerIdLetra(String idVideo) async {
-    final url = Uri.parse(
-        'https://youtube-music-api3.p.rapidapi.com/v2/next?id=$idVideo');
-    final headers = {
-      'x-rapidapi-key': '1b7ebc615amsh0e92916a60ff015p1f1bd5jsnf45ce63c33df',
-      'x-rapidapi-host': 'youtube-music-api3.p.rapidapi.com',
-    };
-
-    final response = await http.get(url, headers: headers);
-
-    String jsonString = response.body;
-
-    // Decodifica el JSON string a un Map
-    Map<String, dynamic> jsonMap = json.decode(jsonString);
-
-    // Extrae el valor de 'lyricsId'
-    String lyricsId = jsonMap['lyricsId'];
-
-    cancionSeleccionado.lyricsId = lyricsId;
-    notifyListeners();
-  }
-
-  StreamSubscription<List<String>>? lyricSubscription;
-
+  /// Actualiza la URL del audio y configura el reproductor
   Future<void> actualizarUrl(String videoId) async {
     try {
       isLoading = true;
-
       if (player.playing) {
-        stop();
-        notifyListeners();
+        await stop();
       }
 
       final String urlAudio = await obtenerUrlDelAudio(videoId);
-      await player.setUrl(urlAudio);
+      await player.setAudioSource(AudioSource.uri(Uri.parse(urlAudio)));
 
-      // Obtener el ID de la letra|
       await obtenerIdLetra(videoId);
 
-      // Obtener letras sincronizadas
       if (cancionSeleccionado.lyricsId.isNotEmpty) {
         final syncedLyrics =
             await fetchSyncedLyrics(cancionSeleccionado.lyricsId);
-
-        if (lyricSynchronizer != null) {
-          lyricSubscription?.cancel();
-          lyricSynchronizer!
-              .dispose(); // Limpia recursos del antiguo LyricSynchronizer
-          lyricSynchronizer = null;
-        }
-        currentLyrics = ValueNotifier(['', '', '']);
-        lyricSynchronizer = LyricSynchronizer(player, syncedLyrics);
-        lyricSubscription =
-            lyricSynchronizer!.currentLyricStream.listen((lyrics) {
-          currentLyrics.value = lyrics;
-        });
+        _setupLyricSynchronizer(syncedLyrics);
       }
 
       play();
       isLoading = false;
     } catch (e) {
       isLoading = false;
+      print('Error al actualizar URL: $e');
     }
-
     notifyListeners();
   }
 
-  int _currentIndex = 0;
+  StreamSubscription<List<String>>? lyricSubscription;
 
+  /// Configura el sincronizador de letras
+  void _setupLyricSynchronizer(List<Map<String, dynamic>> syncedLyrics) {
+    if (lyricSynchronizer != null) {
+      lyricSubscription?.cancel();
+      lyricSynchronizer!.dispose();
+    }
+    currentLyrics = ValueNotifier(['', '', '']);
+    lyricSynchronizer = LyricSynchronizer(player, syncedLyrics);
+    lyricSubscription = lyricSynchronizer!.currentLyricStream.listen((lyrics) {
+      currentLyrics.value = lyrics;
+    });
+  }
+
+  /// Reproduce la canción actual
   void _playCurrent() async {
     if (_currentIndex < listaCancionesPorReproducir.length) {
-      empezarEscucharCancion(cancionSeleccionado);
+      await empezarEscucharCancion(cancionSeleccionado);
     }
     notifyListeners();
   }
 
-  bool _isPlayingNext = false;
-
+  /// Reproduce la siguiente canción en la lista
   void playNext() {
-    if (_isPlayingNext) {
-      return;
-    } // Salir si ya se está reproduciendo la siguiente canción
+    if (_isPlayingNext) return;
     _isPlayingNext = true;
 
     if (_currentIndex < listaCancionesPorReproducir.length - 1) {
@@ -274,11 +217,11 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
       _playCurrent();
     }
 
-    // Restablecer el flag
     _isPlayingNext = false;
     notifyListeners();
   }
 
+  /// Reproduce la canción anterior en la lista
   void playPrevious() {
     if (_currentIndex > 0) {
       _currentIndex--;
@@ -288,28 +231,27 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
     notifyListeners();
   }
 
+  /// Elimina una canción de la lista de reproducción
   void eliminarCancionDeListaPorReproducir(Cancion cancion) {
-    // Busca la canción en la lista y la elimina si existe
     if (listaCancionesPorReproducir.contains(cancion)) {
       listaCancionesPorReproducir.remove(cancion);
-      // Si la canción eliminada era la que se estaba reproduciendo, actualiza la reproducción
       if (cancionSeleccionado == cancion) {
         if (_currentIndex >= listaCancionesPorReproducir.length) {
-          _currentIndex = 0; // Resetea el índice si estaba en la última canción
+          _currentIndex = 0;
         }
         if (listaCancionesPorReproducir.isNotEmpty) {
           cancionSeleccionado = listaCancionesPorReproducir[_currentIndex];
           _playCurrent();
         } else {
-          stop(); // Detiene la reproducción si no quedan más canciones
+          stop();
         }
       }
     }
     notifyListeners();
   }
 
+  /// Agrega una canción después de la canción actual en la lista de reproducción
   void agregarCancionDespuesDeActual(Cancion nuevaCancion, bool reproduccion) {
-    // Si la lista está vacía, simplemente añade la canción y comienza a reproducirla
     if (listaCancionesPorReproducir.isEmpty) {
       listaCancionesPorReproducir.add(nuevaCancion);
       cancionSeleccionado = nuevaCancion;
@@ -318,33 +260,23 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
         _playCurrent();
       }
     } else {
-      // Inserta la nueva canción después de la canción actualmente en reproducción
       int indexActual = _currentIndex;
       listaCancionesPorReproducir.insert(indexActual + 1, nuevaCancion);
     }
     notifyListeners();
   }
 
+  /// Verifica si una canción está actualmente en reproducción
   bool estaCancionEnReproduccion(Cancion cancion) {
-    // Verifica si la canción está en la lista de canciones por reproducir
-    if (listaCancionesPorReproducir.contains(cancion)) {
-      // Verifica si la canción en reproducción actualmente es la misma que la proporcionada
-      return player.playing && cancionSeleccionado == cancion;
-    }
-    // Si la canción no está en la lista, retorna false
-    return false;
+    return listaCancionesPorReproducir.contains(cancion) &&
+        player.playing &&
+        cancionSeleccionado == cancion;
   }
 
+  /// Comienza a reproducir una canción específica
   Future<void> empezarEscucharCancion(Cancion cancion) async {
-    // Encuentra el índice de la canción en la lista de canciones por reproducir
     int index = listaCancionesPorReproducir.indexOf(cancion);
-    //parceo la duracion que viene de tipo string, a tipo duration
-    String timeString = cancion.duration;
-    List<String> parts = timeString.split(':');
-    int minutes = int.parse(parts[0]);
-    int seconds = int.parse(parts[1]);
-
-    Duration duration = Duration(minutes: minutes, seconds: seconds);
+    Duration duration = _parseDuration(cancion.duration);
 
     MediaItem mediaItemCancion = MediaItem(
         id: cancion.videoId,
@@ -353,94 +285,70 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
         duration: duration,
         artUri: Uri.parse(cancion.thumbnail));
 
-    // Si la canción no está en la lista
     if (index == -1) {
-      if (listaCancionesPorReproducir.isEmpty) {
-        cancionSeleccionado = Cancion();
-        cancionSeleccionado = cancion;
-        // La lista está vacía, agrega la canción y empieza a reproducirla
-        listaCancionesPorReproducir.add(cancion);
-        _currentIndex = 0;
-        await actualizarUrl(
-            cancion.videoId); // Asegúrate de que cancion tenga el videoId
-
-        mediaItem.add(mediaItemCancion);
-        play();
-      } else {
-        if (!listaCancionesPorReproducir.contains(cancion)) {
-          cancionSeleccionado = Cancion();
-          cancionSeleccionado = cancion;
-          // La lista no está vacía, agrega la canción antes del elemento actualmente seleccionado
-          int currentIndex = _currentIndex;
-          // Asegúrate de que el índice sea válido
-          if (currentIndex > listaCancionesPorReproducir.length - 1) {
-            currentIndex = listaCancionesPorReproducir.length - 1;
-          }
-          listaCancionesPorReproducir.insert(currentIndex, cancion);
-          _currentIndex = currentIndex;
-          await actualizarUrl(
-              cancion.videoId); // Asegúrate de que cancion tenga el videoId
-          mediaItem.add(mediaItemCancion);
-          play();
-        } else {
-          cancionSeleccionado = Cancion();
-          cancionSeleccionado = cancion;
-          await actualizarUrl(
-              cancion.videoId); // Asegúrate de que cancion tenga el videoId
-          mediaItem.add(mediaItemCancion);
-          play();
-        }
-      }
+      _handleNewSong(cancion);
     } else {
-      cancionSeleccionado = Cancion();
-      cancionSeleccionado = cancion;
-      // La canción ya está en la lista, actualiza el índice y empieza a reproducir
-      _currentIndex = index;
-      await actualizarUrl(
-          cancion.videoId); // Asegúrate de que cancion tenga el videoId
-      mediaItem.add(mediaItemCancion);
-      play();
+      _handleExistingSong(index, cancion);
     }
+
+    await actualizarUrl(cancion.videoId);
+    mediaItem.add(mediaItemCancion);
+    play();
     notifyListeners();
   }
 
-  //Parte para de la lista de reproduccion
-  List<PlaylistMyApp> listasDePlaylists = [];
+  /// Maneja la lógica para una nueva canción en la lista
+  void _handleNewSong(Cancion cancion) {
+    if (listaCancionesPorReproducir.isEmpty) {
+      listaCancionesPorReproducir.add(cancion);
+      _currentIndex = 0;
+    } else {
+      int currentIndex = _currentIndex < listaCancionesPorReproducir.length - 1
+          ? _currentIndex
+          : listaCancionesPorReproducir.length - 1;
+      listaCancionesPorReproducir.insert(currentIndex, cancion);
+      _currentIndex = currentIndex;
+    }
+    cancionSeleccionado = cancion;
+  }
 
-  //Crea una playlist
+  /// Maneja la lógica para una canción existente en la lista
+  void _handleExistingSong(int index, Cancion cancion) {
+    _currentIndex = index;
+    cancionSeleccionado = cancion;
+  }
+
+  /// Parsea una duración de string a Duration
+  Duration _parseDuration(String timeString) {
+    List<String> parts = timeString.split(':');
+    int minutes = int.parse(parts[0]);
+    int seconds = int.parse(parts[1]);
+    return Duration(minutes: minutes, seconds: seconds);
+  }
+
+  /// Crea una nueva playlist
   Future<void> crearPlaylist(String nombrePlaylist) async {
-    List<Cancion> canciones = [];
-    listasDePlaylists
-        .add(PlaylistMyApp(nombre: nombrePlaylist, canciones: canciones));
-
-    guardarPlaylistsEnPreferencias(listasDePlaylists);
+    listasDePlaylists.add(PlaylistMyApp(nombre: nombrePlaylist, canciones: []));
+    await guardarPlaylistsEnPreferencias(listasDePlaylists);
     notifyListeners();
   }
 
-  //se encarga de obtener las playlist guardadas en local
+  /// Obtiene las playlists guardadas localmente
   Future<List<PlaylistMyApp>> obtenerPlaylists() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
-
-    // Recupera la lista actual de playlists guardadas
     String? playlistsJson = prefs.getString('playlists');
     List<PlaylistMyApp> playlists = [];
 
     if (playlistsJson != null) {
-      // Convierte el JSON de playlists a una lista de objetos Playlist
       playlists = PlaylistsList.fromJson(jsonDecode(playlistsJson)).playlists;
     }
 
-    //Verifica si la playlist de "Favoritos" ya existe
     bool favoritosExiste =
         playlists.any((playlist) => playlist.nombre == 'Favoritos');
-
     if (!favoritosExiste) {
-      // Si no existe, la crea y la agrega a la lista
       PlaylistMyApp favoritos =
           PlaylistMyApp(nombre: 'Favoritos', canciones: []);
       playlists.add(favoritos);
-
-      // Guarda la lista actualizada en SharedPreferences
       await guardarPlaylistsEnPreferencias(playlists);
     }
 
@@ -448,31 +356,26 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
     return playlists;
   }
 
-  //Guarda las playlists en el celular
+  /// Guarda las playlists en las preferencias compartidas
   Future<void> guardarPlaylistsEnPreferencias(
       List<PlaylistMyApp> playlists) async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
-
-    // Convierte la lista de playlists a JSON y la guarda en SharedPreferences
     String playlistsJson = PlaylistsList(playlists: playlists).toJson();
     await prefs.setString('playlists', playlistsJson);
     notifyListeners();
   }
 
-  //Borra una playlist
+  /// Borra una playlist específica
   Future<void> borrarPlaylist(String nombrePlaylist) async {
-    // Filtra para eliminar la playlist específica
     listasDePlaylists
         .removeWhere((playlist) => playlist.nombre == nombrePlaylist);
-
-    guardarPlaylistsEnPreferencias(listasDePlaylists);
+    await guardarPlaylistsEnPreferencias(listasDePlaylists);
     notifyListeners();
   }
 
-  //Borra una cancion de una playlist
+  /// Borra una canción de una playlist específica
   Future<void> borrarCancionDePlaylist(
       String nombrePlaylist, String videoIdCancion) async {
-    // Busca la playlist específica y elimina la canción
     for (PlaylistMyApp playlist in listasDePlaylists) {
       if (playlist.nombre == nombrePlaylist) {
         playlist.canciones
@@ -480,132 +383,106 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
         break;
       }
     }
-
-    guardarPlaylistsEnPreferencias(listasDePlaylists);
+    await guardarPlaylistsEnPreferencias(listasDePlaylists);
     notifyListeners();
   }
 
-  //Modifico el nombre de una playlist
+  /// Modifica el nombre de una playlist
   Future<void> modificarNombrePlaylist(
       String nombrePlaylist, String nuevoNombre) async {
-    // Busca la playlist específica y elimina la canción
     for (PlaylistMyApp playlist in listasDePlaylists) {
       if (playlist.nombre == nombrePlaylist) {
         playlist.nombre = nuevoNombre;
         break;
       }
     }
-    guardarPlaylistsEnPreferencias(listasDePlaylists);
+    await guardarPlaylistsEnPreferencias(listasDePlaylists);
     notifyListeners();
   }
 
-  //Agrego una cancion a la playlist
+  /// Agrega una canción a una playlist específica
   Future<bool> agregarCancionAPlaylist(
       String nombrePlaylist, Cancion nuevaCancion) async {
-    // Buscar la playlist por nombre
     final playlist = listasDePlaylists.firstWhere(
       (playlist) => playlist.nombre == nombrePlaylist,
       orElse: () => PlaylistMyApp(nombre: nombrePlaylist, canciones: []),
     );
 
-    // Verificar si la canción ya existe en la playlist
     bool cancionYaExiste = playlist.canciones
         .any((cancion) => cancion.videoId == nuevaCancion.videoId);
 
     if (!cancionYaExiste) {
-      // Agregar la canción si no existe
       playlist.canciones.add(nuevaCancion);
-      guardarPlaylistsEnPreferencias(listasDePlaylists);
+      await guardarPlaylistsEnPreferencias(listasDePlaylists);
       notifyListeners();
       return true;
     } else {
       playlist.canciones.remove(nuevaCancion);
-      guardarPlaylistsEnPreferencias(listasDePlaylists);
+      await guardarPlaylistsEnPreferencias(listasDePlaylists);
       notifyListeners();
       return false;
     }
   }
 
-  //Agrego una cancion a la playlist
+  /// Verifica si una canción está en la lista de "Me gusta"
   bool verificarMeGusta(String nombrePlaylist, Cancion nuevaCancion) {
-    // Buscar la playlist por nombre
     final playlist = listasDePlaylists.firstWhere(
       (playlist) => playlist.nombre == nombrePlaylist,
       orElse: () => PlaylistMyApp(nombre: nombrePlaylist, canciones: []),
     );
 
-    // Verificar si la canción ya existe en la playlist
-    bool cancionYaExiste = playlist.canciones
+    return !playlist.canciones
         .any((cancion) => cancion.videoId == nuevaCancion.videoId);
-
-    if (!cancionYaExiste) {
-      return true;
-    } else {
-      return false; // Salir de la función si ya existe
-    }
   }
 
-// Función que agrega una playlist completa a la cola de reproducción y comienza a reproducir si no hay nada sonando
+  /// Agrega una playlist completa a la cola de reproducción
   Future<void> agregarPlaylistACola(String nombrePlaylist) async {
-    // Buscar la playlist por nombre
     PlaylistMyApp? playlistSeleccionada = listasDePlaylists.firstWhere(
       (playlist) => playlist.nombre == nombrePlaylist,
       orElse: () => PlaylistMyApp(nombre: '', canciones: []),
     );
 
     if (playlistSeleccionada.nombre.isNotEmpty) {
-      // Si la playlist existe y tiene canciones
-      bool estaReproduciendo =
-          player.playing; // Verifica si algo se está reproduciendo actualmente
+      bool estaReproduciendo = player.playing;
 
-      // Agregar todas las canciones a la cola
       for (Cancion cancion in playlistSeleccionada.canciones) {
         agregarCancionDespuesDeActual(cancion, false);
       }
 
-      // Si no hay nada reproduciéndose, comenzamos a reproducir la primera canción
       if (!estaReproduciendo && playlistSeleccionada.canciones.isNotEmpty) {
         miniReproduciendo = true;
         await empezarEscucharCancion(listaCancionesPorReproducir.first);
       }
-      // Notificar a los listeners para actualizar la UI
-    } else {}
+    }
     notifyListeners();
   }
 
-// Función que agrega una playlist completa de forma aleatoria a la cola de reproducción
+  /// Agrega una playlist completa de forma aleatoria a la cola de reproducción
   Future<void> agregarPlaylistAColaAleatoria(String nombrePlaylist) async {
-    // Buscar la playlist por nombre
     PlaylistMyApp? playlistSeleccionada = listasDePlaylists.firstWhere(
       (playlist) => playlist.nombre == nombrePlaylist,
       orElse: () => PlaylistMyApp(nombre: '', canciones: []),
     );
 
     if (playlistSeleccionada.nombre.isNotEmpty) {
-      // Si la playlist existe y tiene canciones
-      bool estaReproduciendo =
-          player.playing; // Verifica si algo se está reproduciendo actualmente
+      bool estaReproduciendo = player.playing;
 
-      // Hacer una copia de las canciones de la playlist y barajarlas (shuffle)
       List<Cancion> cancionesAleatorias =
           List.from(playlistSeleccionada.canciones)..shuffle();
 
-      // Agregar todas las canciones barajadas a la cola
       for (Cancion cancion in cancionesAleatorias) {
         agregarCancionDespuesDeActual(cancion, false);
       }
 
-      // Si no hay nada reproduciéndose, comenzamos a reproducir una canción al azar
       if (!estaReproduciendo && cancionesAleatorias.isNotEmpty) {
         miniReproduciendo = true;
         await empezarEscucharCancion(listaCancionesPorReproducir.first);
       }
-
-      // Notificar a los listeners para actualizar la UI
-    } else {}
+    }
     notifyListeners();
   }
 
+  /// Muestra un diálogo para guardar una canción en una playlist
   Future<void> mostrarPopDeGuardarCancionEnPlaylist(
       BuildContext context, Cancion cancion) async {
     return showDialog(
@@ -647,46 +524,49 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
     );
   }
 
+  /// Salta a la canción anterior
   @override
   Future<void> skipToPrevious() async {
     playPrevious();
     notifyListeners();
   }
 
+  /// Salta a la siguiente canción
   @override
   Future<void> skipToNext() async {
     playNext();
     notifyListeners();
   }
 
-  // Pausar el audio
+  /// Pausa la reproducción
   @override
   Future<void> pause() async {
     await player.pause();
     notifyListeners();
   }
 
-  // Reproducir el audio
+  /// Inicia o reanuda la reproducción
   @override
   Future<void> play() async {
     await player.play();
     notifyListeners();
   }
 
-  // Detener la reproducción
+  /// Detiene la reproducción
   @override
   Future<void> stop() async {
     await player.stop();
     notifyListeners();
   }
 
-  // Actualizar la posición de la canción actual
+  /// Busca una posición específica en la canción actual
   @override
   Future<void> seek(Duration position) async {
     await player.seek(position);
     notifyListeners();
   }
 
+  /// Transmite el estado actual de la reproducción
   void _broadcastState(PlaybackEvent event) {
     playbackState.add(PlaybackState(
       controls: [
@@ -716,20 +596,20 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
     notifyListeners();
   }
 
-  int selectedIndex = 0;
-  int menuItem = 0;
-
+  /// Cambia el índice seleccionado
   void cambiarSelectedIndex(int index) {
     selectedIndex = index;
     notifyListeners();
   }
 
+  /// Cambia el ítem del menú seleccionado
   void cambiarMenuItem(int index) {
     menuItem = index;
     selectedIndex = index;
     notifyListeners();
   }
 
+  /// Muestra un bottom sheet con la cola de reproducción
   void showBottomSheet(BuildContext context, List<Cancion> lista) {
     showModalBottomSheet(
       context: context,
@@ -737,8 +617,7 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
         return Container(
           decoration: const BoxDecoration(color: Color(0xff022527)),
           width: double.infinity,
-          height: MediaQuery.of(context).size.height /
-              1, //La mitad de la altura de la pantalla
+          height: MediaQuery.of(context).size.height / 1,
           child: Column(
             children: [
               Padding(
@@ -781,8 +660,7 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
     );
   }
 
-  int playListSeleccionada = 0;
-
+  /// Obtiene canciones relacionadas con un video específico
   Future<void> obtenerCancionesRelacionadas(String videoId) async {
     const apiKey = '1b7ebc615amsh0e92916a60ff015p1f1bd5jsnf45ce63c33df';
     const apiHost = 'youtube-music-api3.p.rapidapi.com';
@@ -801,24 +679,69 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler, ChangeNotifier {
         final jsonResult = json.decode(response.body);
         final cancionesList = CancionesList.fromJson(jsonResult);
 
-        // Agregar canciones a la cola de reproducción
         for (var cancion in cancionesList) {
           agregarCancionDespuesDeActual(cancion, false);
         }
 
-        notifyListeners(); // Notificar a los listeners que la cola ha sido actualizada
+        notifyListeners();
       } else {
         throw Exception(
             'Failed to load songs. Status code: ${response.statusCode}');
       }
     } catch (e) {
-      // Aquí puedes manejar el error como prefieras, por ejemplo:
-      // mostrar un mensaje al usuario, o intentar nuevamente
+      print('Error al obtener canciones relacionadas: $e');
     }
   }
 
+  /// Borra toda la cola de reproducción
   void borrarColaDeReproduccion() {
     listaCancionesPorReproducir = [];
     notifyListeners();
+  }
+
+  /// Obtiene el ID de la letra de una canción
+  Future<void> obtenerIdLetra(String idVideo) async {
+    final url = Uri.parse(
+        'https://youtube-music-api3.p.rapidapi.com/v2/next?id=$idVideo');
+    final headers = {
+      'x-rapidapi-key': '1b7ebc615amsh0e92916a60ff015p1f1bd5jsnf45ce63c33df',
+      'x-rapidapi-host': 'youtube-music-api3.p.rapidapi.com',
+    };
+
+    try {
+      final response = await http.get(url, headers: headers);
+      String jsonString = response.body;
+      Map<String, dynamic> jsonMap = json.decode(jsonString);
+      String lyricsId = jsonMap['lyricsId'];
+      cancionSeleccionado.lyricsId = lyricsId;
+      notifyListeners();
+    } catch (e) {
+      print('Error al obtener ID de letra: $e');
+    }
+  }
+
+  /// Obtiene las letras sincronizadas de una canción
+  Future<List<Map<String, dynamic>>> fetchSyncedLyrics(String lyricsId) async {
+    final url = Uri.parse(
+        'https://youtube-music-api3.p.rapidapi.com/music/lyrics/synced?id=$lyricsId&format=json');
+    final headers = {
+      'x-rapidapi-key': '1b7ebc615amsh0e92916a60ff015p1f1bd5jsnf45ce63c33df',
+      'x-rapidapi-host': 'youtube-music-api3.p.rapidapi.com'
+    };
+
+    try {
+      final response = await http.get(url, headers: headers);
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonResult = json.decode(response.body);
+        return jsonResult.cast<Map<String, dynamic>>();
+      } else {
+        print(
+            'Error al obtener letras sincronizadas. Status code: ${response.statusCode}');
+        return [];
+      }
+    } catch (error) {
+      print('Error al obtener letras sincronizadas: $error');
+      return [];
+    }
   }
 }
